@@ -118,36 +118,80 @@ class DemandForecaster:
         tune_hyperparams: bool = False,
         n_iter: int = 20,
     ) -> dict:
-        """Train the demand forecasting model.
+        """Train with genuine temporal cross-validation.
 
-        Args:
-            calendar_df: Feature-engineered calendar DataFrame with 'was_booked' target.
-            listings_df: Optional listings DataFrame for listing-level features.
-            tune_hyperparams: Whether to run RandomizedSearchCV.
-            n_iter: Number of random search iterations.
+        A separate XGBoost model is fitted for every TimeSeriesSplit fold.
+        The validation fold is therefore always scored by a model trained
+        only on observations preceding that fold.
 
-        Returns:
-            Dict of evaluation metrics.
+        After cross-validation, a final production model is fitted on all
+        supplied observations.
         """
-        X, y = self._prepare_data(calendar_df, listings_df)
+        df = calendar_df.copy()
 
-        # TimeSeriesSplit — prevents future data leakage
-        tscv = TimeSeriesSplit(n_splits=self.model_cfg["cv_splits"])
+        # Ensure temporal ordering whenever dates are available.
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
 
-        # Set up MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+            sort_cols = ["date"]
+            if "listing_id" in df.columns:
+                sort_cols.append("listing_id")
+
+            df = (
+                df.sort_values(sort_cols, kind="mergesort")
+                .reset_index(drop=True)
+            )
+
+        X, y = self._prepare_data(df, listings_df)
+
+        n_splits = self.model_cfg["cv_splits"]
+        if len(X) <= n_splits:
+            raise ValueError(
+                f"Need more than {n_splits} rows for TimeSeriesSplit; "
+                f"got {len(X)}."
+            )
+
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        xgb_cfg = self.model_cfg["xgboost"]
+
+        base_params = {
+            "n_estimators": xgb_cfg["n_estimators"],
+            "max_depth": xgb_cfg["max_depth"],
+            "learning_rate": xgb_cfg["learning_rate"],
+            "subsample": xgb_cfg["subsample"],
+            "colsample_bytree": xgb_cfg["colsample_bytree"],
+            "random_state": self.model_cfg["random_state"],
+            "eval_metric": "logloss",
+            "tree_method": "hist",
+            "n_jobs": -1,
+        }
+
+        mlflow.set_tracking_uri(
+            self.config["mlflow"]["tracking_uri"]
+        )
+        mlflow.set_experiment(
+            self.config["mlflow"]["experiment_name"]
+        )
 
         with mlflow.start_run(run_name="demand_forecaster"):
+            selected_params = dict(base_params)
+
             if tune_hyperparams:
-                logger.info(f"Running RandomizedSearchCV with {n_iter} iterations...")
-                base_model = XGBClassifier(
+                logger.info(
+                    f"Running RandomizedSearchCV "
+                    f"with {n_iter} iterations..."
+                )
+
+                search_model = XGBClassifier(
                     random_state=self.model_cfg["random_state"],
                     eval_metric="logloss",
-                    use_label_encoder=False,
+                    tree_method="hist",
+                    n_jobs=-1,
                 )
+
                 search = RandomizedSearchCV(
-                    base_model,
+                    search_model,
                     PARAM_DISTRIBUTIONS,
                     n_iter=n_iter,
                     cv=tscv,
@@ -156,74 +200,168 @@ class DemandForecaster:
                     n_jobs=-1,
                     verbose=1,
                 )
+
                 search.fit(X, y)
-                self.model = search.best_estimator_
-                best_params = search.best_params_
-                logger.info(f"Best params: {best_params}")
-                mlflow.log_params(best_params)
-            else:
-                xgb_cfg = self.model_cfg["xgboost"]
-                params = {
-                    "n_estimators": xgb_cfg["n_estimators"],
-                    "max_depth": xgb_cfg["max_depth"],
-                    "learning_rate": xgb_cfg["learning_rate"],
-                    "subsample": xgb_cfg["subsample"],
-                    "colsample_bytree": xgb_cfg["colsample_bytree"],
-                    "random_state": self.model_cfg["random_state"],
-                    "eval_metric": "logloss",
-                    "use_label_encoder": False,
-                    "early_stopping_rounds": xgb_cfg["early_stopping_rounds"],
-                }
-                mlflow.log_params(params)
-                self.model = XGBClassifier(**params)
+                selected_params.update(search.best_params_)
 
-                # Train with early stopping using last fold as eval set
-                splits = list(tscv.split(X))
-                train_idx, val_idx = splits[-1]
-                X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-                y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+                logger.info(
+                    f"Best params: {search.best_params_}"
+                )
 
-                self.model.fit(
-                    X_train, y_train,
+            mlflow.log_params(selected_params)
+
+            fold_metrics = []
+            best_iterations = []
+
+            # IMPORTANT:
+            # fit an independent model for every temporal fold.
+            for fold_i, (train_idx, val_idx) in enumerate(
+                tscv.split(X),
+                start=1,
+            ):
+                X_train = X.iloc[train_idx]
+                X_val = X.iloc[val_idx]
+                y_train = y.iloc[train_idx]
+                y_val = y.iloc[val_idx]
+
+                fold_params = dict(selected_params)
+                fold_params["early_stopping_rounds"] = (
+                    xgb_cfg["early_stopping_rounds"]
+                )
+
+                fold_model = XGBClassifier(**fold_params)
+
+                fold_model.fit(
+                    X_train,
+                    y_train,
                     eval_set=[(X_val, y_val)],
                     verbose=False,
                 )
 
-            # Evaluate across all CV folds
-            fold_metrics = []
-            for fold_i, (train_idx, val_idx) in enumerate(tscv.split(X)):
-                X_val_fold = X.iloc[val_idx]
-                y_val_fold = y.iloc[val_idx]
-                y_pred_proba = self.model.predict_proba(X_val_fold)[:, 1]
-                y_pred = self.model.predict(X_val_fold)
+                y_pred_proba = (
+                    fold_model.predict_proba(X_val)[:, 1]
+                )
+                y_pred = fold_model.predict(X_val)
 
-                fold_auc = roc_auc_score(y_val_fold, y_pred_proba)
-                fold_acc = accuracy_score(y_val_fold, y_pred)
-                fold_f1 = f1_score(y_val_fold, y_pred)
-                fold_metrics.append({
-                    "fold": fold_i,
-                    "auc": fold_auc,
-                    "accuracy": fold_acc,
-                    "f1": fold_f1,
-                })
-                logger.info(f"Fold {fold_i}: AUC={fold_auc:.4f}, Acc={fold_acc:.4f}, F1={fold_f1:.4f}")
+                fold_auc = roc_auc_score(
+                    y_val,
+                    y_pred_proba,
+                )
+                fold_acc = accuracy_score(
+                    y_val,
+                    y_pred,
+                )
+                fold_f1 = f1_score(
+                    y_val,
+                    y_pred,
+                )
 
-            # Average metrics
+                best_iteration = getattr(
+                    fold_model,
+                    "best_iteration",
+                    None,
+                )
+
+                if best_iteration is None:
+                    n_trees = int(
+                        selected_params["n_estimators"]
+                    )
+                else:
+                    n_trees = int(best_iteration) + 1
+
+                best_iterations.append(n_trees)
+
+                fold_metrics.append(
+                    {
+                        "fold": fold_i,
+                        "auc": float(fold_auc),
+                        "accuracy": float(fold_acc),
+                        "f1": float(fold_f1),
+                        "best_n_estimators": n_trees,
+                    }
+                )
+
+                logger.info(
+                    f"Fold {fold_i}: "
+                    f"AUC={fold_auc:.4f}, "
+                    f"Acc={fold_acc:.4f}, "
+                    f"F1={fold_f1:.4f}, "
+                    f"trees={n_trees}"
+                )
+
+                mlflow.log_metric(
+                    f"fold_{fold_i}_auc",
+                    float(fold_auc),
+                )
+                mlflow.log_metric(
+                    f"fold_{fold_i}_accuracy",
+                    float(fold_acc),
+                )
+                mlflow.log_metric(
+                    f"fold_{fold_i}_f1",
+                    float(fold_f1),
+                )
+
             self.metrics = {
-                "auc": np.mean([m["auc"] for m in fold_metrics]),
-                "accuracy": np.mean([m["accuracy"] for m in fold_metrics]),
-                "f1": np.mean([m["f1"] for m in fold_metrics]),
-                "auc_std": np.std([m["auc"] for m in fold_metrics]),
+                "auc": float(
+                    np.mean(
+                        [m["auc"] for m in fold_metrics]
+                    )
+                ),
+                "accuracy": float(
+                    np.mean(
+                        [m["accuracy"] for m in fold_metrics]
+                    )
+                ),
+                "f1": float(
+                    np.mean(
+                        [m["f1"] for m in fold_metrics]
+                    )
+                ),
+                "auc_std": float(
+                    np.std(
+                        [m["auc"] for m in fold_metrics]
+                    )
+                ),
             }
-            logger.info(f"Mean AUC: {self.metrics['auc']:.4f} +/- {self.metrics['auc_std']:.4f}")
+
+            logger.info(
+                f"Mean AUC: {self.metrics['auc']:.4f} "
+                f"+/- {self.metrics['auc_std']:.4f}"
+            )
 
             mlflow.log_metrics(self.metrics)
-            mlflow.log_param("n_features", len(self.feature_names))
-            mlflow.log_param("n_samples", len(X))
-            mlflow.log_param("features", json.dumps(self.feature_names))
 
-            # Log model
-            mlflow.sklearn.log_model(self.model, "demand_model")
+            # Use the typical early-stopping result for the final model.
+            final_n_estimators = max(
+                1,
+                int(np.median(best_iterations)),
+            )
+
+            mlflow.log_param(
+                "final_n_estimators",
+                final_n_estimators,
+            )
+
+            final_params = dict(selected_params)
+            final_params["n_estimators"] = (
+                final_n_estimators
+            )
+
+            # Final artifact is trained on all supplied data.
+            # No eval set is used here.
+            final_params.pop(
+                "early_stopping_rounds",
+                None,
+            )
+
+            self.model = XGBClassifier(**final_params)
+            self.model.fit(X, y)
+
+            mlflow.sklearn.log_model(
+                self.model,
+                "demand_model",
+            )
 
         return self.metrics
 

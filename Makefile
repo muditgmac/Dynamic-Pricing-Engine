@@ -10,12 +10,11 @@ data:
 
 # Run MLflow UI
 mlflow:
-	mlflow ui --backend-store-uri mlruns --port 5000
+	mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
 
 # Train all models
 train:
-	python -m src.models.demand_forecaster
-	python -m src.models.elasticity_estimator
+	python -m src.models.train_models
 
 # Run FastAPI server
 run:
