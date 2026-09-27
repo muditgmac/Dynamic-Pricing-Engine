@@ -119,15 +119,17 @@ The current project keeps prediction and decision support separate:
 
 For a reference price \(P_0\), base demand proxy \(D_0\), and an assumed sensitivity \(s\), the scenario engine uses:
 
-\[
+For a reference price \(P_0\), base demand proxy \(D_0\), and an assumed sensitivity \(s\), the scenario engine uses:
+
+$$
 D(P) = D_0 \exp\left[-s\left(\frac{P}{P_0}-1\right)\right]
-\]
+$$
 
 and scores candidate prices with:
 
-\[
+$$
 R_{\text{proxy}}(P) = P \times D(P)
-\]
+$$
 
 The engine searches within configured price bounds and compares low, moderate, and high sensitivity assumptions.
 
