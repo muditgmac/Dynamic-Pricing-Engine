@@ -1,4 +1,4 @@
-"""Train and persist all models used by the pricing engine."""
+"""Train and persist production models used by the pricing engine."""
 
 import argparse
 import json
@@ -19,7 +19,6 @@ from src.models.demand_forecaster import (
     DEMAND_FEATURES,
     DemandForecaster,
 )
-from src.models.elasticity_estimator import ElasticityEstimator
 from src.utils.config import PROJECT_ROOT, load_config
 from src.utils.logger import get_logger
 
@@ -119,7 +118,7 @@ def _json_safe(mapping: dict) -> dict:
 
 
 def train_all(max_rows: int = DEFAULT_MAX_ROWS) -> dict:
-    """Train demand, elasticity, and anomaly models."""
+    """Train demand and anomaly models used in production."""
     config = load_config()
 
     calendar_path = (
@@ -165,9 +164,6 @@ def train_all(max_rows: int = DEFAULT_MAX_ROWS) -> dict:
         "amenity_score",
         "review_score",
         "location_cluster",
-        "occupancy_rate",
-        "price_rank_in_neighborhood",
-        "price_vs_neighborhood",
     ]
 
     logger.info(
@@ -213,14 +209,6 @@ def train_all(max_rows: int = DEFAULT_MAX_ROWS) -> dict:
     )
     demand.save()
 
-    logger.info("Training Ridge elasticity estimator...")
-    elasticity = ElasticityEstimator(config=config)
-    elasticity_metrics = elasticity.train(
-        calendar_df,
-        listings_df,
-    )
-    elasticity.save()
-
     logger.info("Training Isolation Forest anomaly detector...")
     mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
@@ -259,7 +247,6 @@ def train_all(max_rows: int = DEFAULT_MAX_ROWS) -> dict:
     summary = {
         "training_rows": int(len(calendar_df)),
         "demand": _json_safe(demand_metrics),
-        "elasticity": _json_safe(elasticity_metrics),
         "anomaly": {
             "training_anomaly_rate": anomaly_rate,
             "contamination": float(anomaly.contamination),
@@ -276,9 +263,6 @@ def train_all(max_rows: int = DEFAULT_MAX_ROWS) -> dict:
         f"Demand metrics: {summary['demand']}"
     )
     logger.info(
-        f"Elasticity metrics: {summary['elasticity']}"
-    )
-    logger.info(
         f"Anomaly metrics: {summary['anomaly']}"
     )
     logger.info(
@@ -290,7 +274,7 @@ def train_all(max_rows: int = DEFAULT_MAX_ROWS) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Train all Dynamic Pricing Engine models."
+        description="Train production demand and anomaly models."
     )
     parser.add_argument(
         "--max-rows",

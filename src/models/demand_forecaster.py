@@ -463,7 +463,7 @@ class DemandForecaster:
             self.model = XGBClassifier(**evaluation_params)
             self.model.fit(X, y)
 
-            input_example = X.iloc[[0]].copy()
+            input_example = X.iloc[[0]].astype(float).copy()
             mlflow.sklearn.log_model(
                 self.model,
                 artifact_path="demand_model",
