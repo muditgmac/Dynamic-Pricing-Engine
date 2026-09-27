@@ -351,7 +351,7 @@ python -m pytest \
   tests/ \
   --cov=src \
   --cov-report=term-missing \
-  --cov-fail-under=70
+  --cov-fail-under=75
 ```
 
 Run lint checks:
@@ -362,8 +362,8 @@ python -m ruff check src tests dashboard
 
 Current verified state:
 
-- **133 tests passing**
-- **70.06% total coverage**
+- **144 tests passing**
+- **82% total coverage**
 - Ruff clean
 - Docker API + dashboard smoke test passing
 
