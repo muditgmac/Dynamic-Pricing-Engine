@@ -12,7 +12,7 @@ data:
 mlflow:
 	mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
 
-# Train all models
+# Train production models
 train:
 	python -m src.models.train_models
 

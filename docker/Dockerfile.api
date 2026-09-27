@@ -16,7 +16,7 @@ COPY src/ src/
 COPY config.yaml .
 
 # Create data & model dirs
-RUN mkdir -p data/raw data/processed data/external models mlruns
+RUN mkdir -p data/raw data/processed data/external models
 
 # Expose API port
 EXPOSE 8000

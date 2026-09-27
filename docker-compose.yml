@@ -9,7 +9,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./models:/app/models
-      - ./mlruns:/app/mlruns
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
