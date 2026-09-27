@@ -4,12 +4,14 @@ WORKDIR /app
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,id=dynamic-pricing-pip-cache,target=/root/.cache/pip \
+    python -m pip install --upgrade --retries 20 --timeout 120 "pip>=25.1,<27" && \
+    python -m pip install --retries 20 --resume-retries 20 --timeout 120 -r requirements.txt
 
 # Copy source code
 COPY src/ src/
