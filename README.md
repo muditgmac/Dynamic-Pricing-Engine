@@ -119,8 +119,6 @@ The current project keeps prediction and decision support separate:
 
 For a reference price \(P_0\), base demand proxy \(D_0\), and an assumed sensitivity \(s\), the scenario engine uses:
 
-For a reference price \(P_0\), base demand proxy \(D_0\), and an assumed sensitivity \(s\), the scenario engine uses:
-
 $$
 D(P) = D_0 \exp\left[-s\left(\frac{P}{P_0}-1\right)\right]
 $$
