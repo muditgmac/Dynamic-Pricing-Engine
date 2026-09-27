@@ -22,7 +22,6 @@ from src.models.demand_forecaster import (
 from src.utils.config import PROJECT_ROOT, load_config
 from src.utils.logger import get_logger
 
-
 logger = get_logger(__name__)
 
 DEFAULT_MAX_ROWS = 500_000

@@ -31,7 +31,6 @@ from src.api.schemas import (
     ShapFeature,
 )
 from src.models.scenario_engine import (
-    SENSITIVITY_PRESETS,
     evaluate_sensitivity_presets,
 )
 from src.utils.logger import get_logger

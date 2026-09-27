@@ -1,9 +1,8 @@
 """Unit tests for the drift detector / monitoring module."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
 from src.monitoring.drift_detector import run_drift_check
 
@@ -31,6 +30,7 @@ class TestRunDriftCheck:
             with patch("builtins.__import__", side_effect=mock_import):
                 # Re-import to trigger the fallback
                 import importlib
+
                 import src.monitoring.drift_detector as dd
                 importlib.reload(dd)
                 result = dd.run_drift_check(config=config)

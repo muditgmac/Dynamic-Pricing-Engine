@@ -1,7 +1,5 @@
 """Unit tests for the data ingestion module."""
 
-import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -15,7 +13,6 @@ from src.data.ingestion import (
     load_csv,
     validate_columns,
 )
-
 
 # ---------------------------------------------------------------------------
 # validate_columns

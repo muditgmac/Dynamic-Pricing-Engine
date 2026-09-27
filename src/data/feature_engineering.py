@@ -9,7 +9,6 @@ Builds all features from raw data:
 - Competitor pricing features (neighborhood median, percentile rank)
 """
 
-from pathlib import Path
 
 import numpy as np
 import pandas as pd

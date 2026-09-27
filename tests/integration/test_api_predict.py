@@ -11,7 +11,6 @@ from src.api.dependencies import (
 from src.api.main import app
 from src.utils.config import load_config
 
-
 CLEAN_FEATURES = [
     "price",
     "day_of_week",

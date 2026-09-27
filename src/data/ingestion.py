@@ -4,8 +4,6 @@ Downloads and loads Inside Airbnb data, weather data from Open-Meteo,
 and holiday data from Nager.Date API.
 """
 
-import gzip
-import io
 from pathlib import Path
 
 import pandas as pd
@@ -53,7 +51,6 @@ def download_file(url: str, output_path: Path, force: bool = False) -> Path:
     response = requests.get(url, stream=True, timeout=120)
     response.raise_for_status()
 
-    total_size = int(response.headers.get("content-length", 0))
     downloaded = 0
 
     with open(output_path, "wb") as f:

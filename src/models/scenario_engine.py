@@ -20,7 +20,6 @@ import numpy as np
 
 from src.utils.config import load_config
 
-
 SENSITIVITY_PRESETS: dict[str, float] = {
     "low": 0.60,
     "moderate": 1.00,
