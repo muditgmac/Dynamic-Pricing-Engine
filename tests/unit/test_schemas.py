@@ -4,11 +4,10 @@ import pytest
 from pydantic import ValidationError
 
 from src.api.schemas import (
-    ExplainRequest,
     HealthResponse,
     PricingRequest,
     PricingResponse,
-    ShapFeature,
+    ScenarioSummary,
 )
 
 
@@ -23,7 +22,9 @@ class TestPricingRequest:
             checkout_date="2024-07-18",
         )
         assert req.beds == 2
-        assert req.amenity_score == 0.5  # default
+        assert req.amenity_score == 0.5
+        assert req.sensitivity_scenario == "moderate"
+        assert req.reference_price is None
 
     def test_rejects_zero_beds(self):
         with pytest.raises(ValidationError):
@@ -71,55 +72,104 @@ class TestPricingRequest:
                 amenity_score=1.5,
             )
 
-    def test_serializes_correctly(self):
-        req = PricingRequest(
-            room_type="Private room",
-            beds=1,
-            bathrooms=1.0,
-            neighborhood="Astoria",
-            checkin_date="2024-08-01",
-            checkout_date="2024-08-03",
-            amenity_score=0.8,
-            review_score=4.5,
-        )
-        data = req.model_dump()
-        assert data["beds"] == 1
-        assert data["amenity_score"] == 0.8
+    def test_rejects_invalid_sensitivity_scenario(self):
+        with pytest.raises(ValidationError):
+            PricingRequest(
+                room_type="Private room",
+                beds=1,
+                bathrooms=1.0,
+                neighborhood="Chelsea",
+                checkin_date="2024-07-15",
+                checkout_date="2024-07-18",
+                sensitivity_scenario="extreme",
+            )
+
+    def test_rejects_checkout_before_checkin(self):
+        with pytest.raises(ValidationError):
+            PricingRequest(
+                room_type="Private room",
+                beds=1,
+                bathrooms=1.0,
+                neighborhood="Chelsea",
+                checkin_date="2024-07-18",
+                checkout_date="2024-07-15",
+            )
+
+    def test_rejects_non_positive_reference_price(self):
+        with pytest.raises(ValidationError):
+            PricingRequest(
+                room_type="Private room",
+                beds=1,
+                bathrooms=1.0,
+                neighborhood="Chelsea",
+                checkin_date="2024-07-15",
+                checkout_date="2024-07-18",
+                reference_price=0,
+            )
 
 
 class TestPricingResponse:
     def test_valid_response(self):
-        resp = PricingResponse(
-            optimal_price=185.50,
-            price_range=[160.0, 210.0],
-            expected_revenue=556.50,
-            demand_forecast=0.72,
-            elasticity_coeff=-1.3,
-            market_avg_price=165.0,
-            shap_top_features=[
-                ShapFeature(feature="is_weekend", contribution=0.15),
-            ],
-            is_anomaly=False,
-            model_version="v0.1.0",
+        scenario = ScenarioSummary(
+            scenario_name="moderate",
+            sensitivity=1.0,
+            recommended_price=175.0,
+            demand_proxy_at_recommended=0.65,
+            revenue_proxy_at_reference=113.75,
+            revenue_proxy_at_recommended=113.75,
+            revenue_proxy_change_pct=0.0,
+            price_bounds=[87.5, 262.5],
         )
-        assert resp.optimal_price == 185.50
 
-    def test_rejects_invalid_demand(self):
+        response = PricingResponse(
+            recommended_price=175.0,
+            reference_price=175.0,
+            reference_price_source="request",
+            unavailability_probability=0.65,
+            selected_scenario="moderate",
+            assumed_sensitivity=1.0,
+            demand_proxy_at_recommended=0.65,
+            revenue_proxy_at_reference=113.75,
+            revenue_proxy_at_recommended=113.75,
+            revenue_proxy_change_pct=0.0,
+            price_bounds=[87.5, 262.5],
+            scenario_results=[scenario],
+            shap_top_features=[],
+            is_anomaly=False,
+            model_version="v0.2.0",
+            methodology_note="Assumption-based scenario.",
+        )
+
+        assert response.recommended_price == 175.0
+        assert response.unavailability_probability == 0.65
+
+    def test_rejects_invalid_probability(self):
         with pytest.raises(ValidationError):
             PricingResponse(
-                optimal_price=100,
-                price_range=[90, 110],
-                expected_revenue=300,
-                demand_forecast=1.5,  # > 1
-                elasticity_coeff=-1.0,
-                market_avg_price=100,
+                recommended_price=175.0,
+                reference_price=175.0,
+                reference_price_source="request",
+                unavailability_probability=1.5,
+                selected_scenario="moderate",
+                assumed_sensitivity=1.0,
+                demand_proxy_at_recommended=0.65,
+                revenue_proxy_at_reference=113.75,
+                revenue_proxy_at_recommended=113.75,
+                revenue_proxy_change_pct=0.0,
+                price_bounds=[87.5, 262.5],
+                scenario_results=[],
                 shap_top_features=[],
                 is_anomaly=False,
-                model_version="v1",
+                model_version="v0.2.0",
+                methodology_note="Assumption-based scenario.",
             )
 
 
 class TestHealthResponse:
     def test_healthy(self):
-        resp = HealthResponse(status="healthy", models_loaded=True, model_version="v1")
-        assert resp.status == "healthy"
+        response = HealthResponse(
+            status="healthy",
+            models_loaded=True,
+            model_version="v0.2.0",
+        )
+        assert response.status == "healthy"

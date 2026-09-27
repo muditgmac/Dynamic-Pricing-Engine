@@ -1,6 +1,14 @@
 """Pydantic v2 request/response models for the Pricing API."""
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+SensitivityScenario = Literal[
+    "low",
+    "moderate",
+    "high",
+]
 
 
 class PricingRequest(BaseModel):
@@ -8,11 +16,24 @@ class PricingRequest(BaseModel):
 
     room_type: str = Field(
         ...,
-        description="Room type: 'Entire home/apt', 'Private room', or 'Shared room'",
+        description=(
+            "Room type: 'Entire home/apt', "
+            "'Private room', 'Hotel room', or 'Shared room'"
+        ),
         examples=["Entire home/apt"],
     )
-    beds: int = Field(..., ge=1, le=20, description="Number of beds")
-    bathrooms: float = Field(..., ge=0.5, le=10, description="Number of bathrooms")
+    beds: int = Field(
+        ...,
+        ge=1,
+        le=20,
+        description="Number of beds",
+    )
+    bathrooms: float = Field(
+        ...,
+        ge=0.5,
+        le=10,
+        description="Number of bathrooms",
+    )
     neighborhood: str = Field(
         ...,
         description="Neighborhood name from the dataset taxonomy",
@@ -29,55 +50,172 @@ class PricingRequest(BaseModel):
         examples=["2024-07-18"],
     )
     amenity_score: float = Field(
-        0.5, ge=0, le=1,
+        0.5,
+        ge=0,
+        le=1,
         description="Fraction of top amenities present (0-1)",
     )
     review_score: float = Field(
-        4.0, ge=0, le=5,
+        4.0,
+        ge=0,
+        le=5,
         description="Average review rating (0-5)",
     )
+    reference_price: float | None = Field(
+        None,
+        gt=0,
+        description=(
+            "Current/reference nightly price. If omitted, "
+            "the neighborhood median is used when available."
+        ),
+    )
+    sensitivity_scenario: SensitivityScenario = Field(
+        "moderate",
+        description=(
+            "Explicit price-sensitivity assumption used by "
+            "the scenario engine."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_stay_dates(self):
+        """Ensure both dates parse and checkout follows check-in."""
+        try:
+            from pandas import Timestamp
+
+            checkin = Timestamp(self.checkin_date)
+            checkout = Timestamp(self.checkout_date)
+        except Exception as exc:
+            raise ValueError(
+                "checkin_date and checkout_date must be valid dates"
+            ) from exc
+
+        if checkout <= checkin:
+            raise ValueError(
+                "checkout_date must be after checkin_date"
+            )
+
+        return self
 
 
 class ShapFeature(BaseModel):
-    """A single SHAP feature contribution."""
+    """A genuine TreeSHAP feature contribution."""
 
-    feature: str = Field(..., description="Feature name")
-    contribution: float = Field(..., description="SHAP contribution to price")
+    feature: str = Field(
+        ...,
+        description="Model feature name",
+    )
+    contribution: float = Field(
+        ...,
+        description=(
+            "TreeSHAP contribution to the XGBoost raw margin. "
+            "Positive values push toward higher unavailability."
+        ),
+    )
+
+
+class ScenarioSummary(BaseModel):
+    """One explicit price-sensitivity scenario."""
+
+    scenario_name: SensitivityScenario
+    sensitivity: float = Field(..., ge=0)
+    recommended_price: float = Field(..., gt=0)
+    demand_proxy_at_recommended: float = Field(
+        ...,
+        ge=0,
+        le=1,
+    )
+    revenue_proxy_at_reference: float = Field(
+        ...,
+        ge=0,
+    )
+    revenue_proxy_at_recommended: float = Field(
+        ...,
+        ge=0,
+    )
+    revenue_proxy_change_pct: float
+    price_bounds: list[float] = Field(
+        ...,
+        min_length=2,
+        max_length=2,
+        description="Scenario search bounds [floor, ceiling]",
+    )
 
 
 class PricingResponse(BaseModel):
     """Response body for POST /predict."""
 
-    optimal_price: float = Field(..., description="Recommended nightly price in USD")
-    price_range: list[float] = Field(
+    recommended_price: float = Field(
         ...,
-        min_length=2, max_length=2,
-        description="[lower_bound, upper_bound] at 90% confidence",
+        gt=0,
+        description=(
+            "Scenario-based nightly price recommendation "
+            "under the selected sensitivity assumption"
+        ),
     )
-    expected_revenue: float = Field(..., description="Projected revenue over the date range")
-    demand_forecast: float = Field(
-        ..., ge=0, le=1,
-        description="Predicted occupancy rate (0-1)",
-    )
-    elasticity_coeff: float = Field(
+    reference_price: float = Field(
         ...,
-        description="Price elasticity estimate (typically -3 to 0)",
+        gt=0,
+        description="Price used for the baseline demand prediction",
     )
-    market_avg_price: float = Field(
+    reference_price_source: str = Field(
         ...,
-        description="Median competitor price in the neighborhood",
+        description=(
+            "'request', 'neighborhood_median', or 'global_median'"
+        ),
     )
+    unavailability_probability: float = Field(
+        ...,
+        ge=0,
+        le=1,
+        description=(
+            "Predicted calendar-unavailability probability. "
+            "This is not a confirmed-booking probability."
+        ),
+    )
+    selected_scenario: SensitivityScenario
+    assumed_sensitivity: float = Field(
+        ...,
+        ge=0,
+        description=(
+            "Explicit scenario assumption; not an estimated causal elasticity"
+        ),
+    )
+    demand_proxy_at_recommended: float = Field(
+        ...,
+        ge=0,
+        le=1,
+    )
+    revenue_proxy_at_reference: float = Field(
+        ...,
+        ge=0,
+    )
+    revenue_proxy_at_recommended: float = Field(
+        ...,
+        ge=0,
+    )
+    revenue_proxy_change_pct: float
+    price_bounds: list[float] = Field(
+        ...,
+        min_length=2,
+        max_length=2,
+        description="Scenario search bounds [floor, ceiling]",
+    )
+    scenario_results: list[ScenarioSummary]
     shap_top_features: list[ShapFeature] = Field(
-        ...,
-        description="Top 5 features and their SHAP contribution to price",
+        default_factory=list,
+        description=(
+            "Top TreeSHAP contributions to the baseline demand model"
+        ),
     )
-    is_anomaly: bool = Field(
+    is_anomaly: bool
+    model_version: str
+    methodology_note: str = Field(
         ...,
-        description="True if demand pattern is unusual",
-    )
-    model_version: str = Field(
-        ...,
-        description="MLflow model version tag",
+        description=(
+            "Clarifies that pricing outputs are assumption-based "
+            "decision-support scenarios, not causal revenue forecasts."
+        ),
     )
 
 
@@ -85,41 +223,55 @@ class ExplainRequest(BaseModel):
     """Request body for POST /explain."""
 
     room_type: str = Field(..., description="Room type")
-    beds: int = Field(..., ge=1, le=20, description="Number of beds")
-    bathrooms: float = Field(..., ge=0.5, le=10, description="Number of bathrooms")
-    neighborhood: str = Field(..., description="Neighborhood name")
-    checkin_date: str = Field(..., description="Check-in date YYYY-MM-DD")
-    amenity_score: float = Field(0.5, ge=0, le=1, description="Amenity score")
-    review_score: float = Field(4.0, ge=0, le=5, description="Review score")
+    beds: int = Field(..., ge=1, le=20)
+    bathrooms: float = Field(..., ge=0.5, le=10)
+    neighborhood: str
+    checkin_date: str
+    amenity_score: float = Field(0.5, ge=0, le=1)
+    review_score: float = Field(4.0, ge=0, le=5)
+    reference_price: float | None = Field(
+        None,
+        gt=0,
+        description=(
+            "Price at which to explain the baseline "
+            "unavailability prediction"
+        ),
+    )
 
 
 class ExplainResponse(BaseModel):
     """Response body for POST /explain."""
 
-    shap_values: list[ShapFeature] = Field(
-        ...,
-        description="All SHAP feature contributions",
+    shap_values: list[ShapFeature]
+    base_value: float | None = Field(
+        None,
+        description="TreeSHAP base value in raw-margin space",
     )
-    base_value: float = Field(..., description="Model base prediction value")
-    predicted_demand: float = Field(..., description="Predicted booking probability")
+    predicted_unavailability: float = Field(
+        ...,
+        ge=0,
+        le=1,
+    )
+    reference_price: float = Field(..., gt=0)
 
 
 class HealthResponse(BaseModel):
     """Response body for GET /health."""
 
-    status: str = Field(..., description="'healthy' or 'unhealthy'")
-    models_loaded: bool = Field(..., description="Whether all models are loaded")
-    model_version: str = Field("", description="Current model version")
+    status: str
+    models_loaded: bool
+    model_version: str = ""
 
 
 class MetricsResponse(BaseModel):
     """Response body for GET /metrics."""
 
-    demand_model_auc: float = Field(..., description="Demand forecaster AUC")
-    demand_model_f1: float = Field(..., description="Demand forecaster F1")
-    elasticity_coeff: float = Field(..., description="Estimated price elasticity")
-    elasticity_r2: float = Field(..., description="Elasticity model R-squared")
-    total_predictions: int = Field(..., description="Total predictions served")
+    holdout_auc: float = Field(..., ge=0, le=1)
+    holdout_pr_auc: float = Field(..., ge=0, le=1)
+    holdout_log_loss: float = Field(..., ge=0)
+    holdout_brier: float = Field(..., ge=0)
+    cv_auc_mean: float = Field(..., ge=0, le=1)
+    total_predictions: int = Field(..., ge=0)
 
 
 class DriftResponse(BaseModel):
@@ -134,4 +286,7 @@ class DriftResponse(BaseModel):
         ...,
         description="List of features that have drifted",
     )
-    report_url: str = Field(..., description="URL to the Evidently HTML report")
+    report_url: str = Field(
+        ...,
+        description="URL to the Evidently HTML report",
+    )

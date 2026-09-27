@@ -9,7 +9,6 @@ Builds all features from raw data:
 - Competitor pricing features (neighborhood median, percentile rank)
 """
 
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -283,13 +282,33 @@ def add_demand_features(
     cal = cal.sort_values(["listing_id", "date"])
     rolling_7d = config["features"]["rolling_window_days"]
 
+    # Use only observations strictly before the current date.
+    # Without shift(1), the current target (`was_booked`) would be
+    # included in its own rolling predictor and cause target leakage.
     cal["rolling_7d_occupancy"] = (
         cal.groupby("listing_id")["was_booked"]
-        .transform(lambda x: x.rolling(rolling_7d, min_periods=1).mean())
+        .transform(
+            lambda x: x.shift(1)
+            .rolling(rolling_7d, min_periods=1)
+            .mean()
+        )
     )
     cal["rolling_30d_occupancy"] = (
         cal.groupby("listing_id")["was_booked"]
-        .transform(lambda x: x.rolling(30, min_periods=1).mean())
+        .transform(
+            lambda x: x.shift(1)
+            .rolling(30, min_periods=1)
+            .mean()
+        )
+    )
+
+    # Listings have no prior history on their first observed date.
+    # Use a neutral prior rather than the current target.
+    cal["rolling_7d_occupancy"] = (
+        cal["rolling_7d_occupancy"].fillna(0.5)
+    )
+    cal["rolling_30d_occupancy"] = (
+        cal["rolling_30d_occupancy"].fillna(0.5)
     )
 
     # Merge occupancy rate into listings

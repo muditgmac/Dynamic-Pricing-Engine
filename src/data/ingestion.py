@@ -4,8 +4,6 @@ Downloads and loads Inside Airbnb data, weather data from Open-Meteo,
 and holiday data from Nager.Date API.
 """
 
-import gzip
-import io
 from pathlib import Path
 
 import pandas as pd
@@ -53,7 +51,6 @@ def download_file(url: str, output_path: Path, force: bool = False) -> Path:
     response = requests.get(url, stream=True, timeout=120)
     response.raise_for_status()
 
-    total_size = int(response.headers.get("content-length", 0))
     downloaded = 0
 
     with open(output_path, "wb") as f:
@@ -279,11 +276,31 @@ if __name__ == "__main__":
         print(f"   {name}: {df.shape[0]:,} rows x {df.shape[1]} columns")
 
     print("\n3. Fetching weather data from Open-Meteo...")
-    weather_df = fetch_weather_data(config=config)
+    weather_df = fetch_weather_data(
+        start_date="2023-03-06",
+        end_date="2024-03-05",
+        config=config,
+    )
     print(f"   Weather: {weather_df.shape[0]} days")
 
     print("\n4. Fetching holiday data from Nager.Date...")
-    holiday_df = fetch_holiday_data(config=config)
+    holiday_2023 = fetch_holiday_data(year=2023, config=config)
+    holiday_2024 = fetch_holiday_data(year=2024, config=config)
+
+    holiday_df = (
+        pd.concat([holiday_2023, holiday_2024], ignore_index=True)
+        .drop_duplicates(subset=["date", "holiday_name"])
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+    holiday_path = (
+        PROJECT_ROOT
+        / config["data"]["external_dir"]
+        / "holidays.parquet"
+    )
+    holiday_df.to_parquet(holiday_path, index=False)
+
     print(f"   Holidays: {holiday_df.shape[0]} entries")
 
     print("\n=== Data ingestion complete! ===")

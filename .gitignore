@@ -51,3 +51,4 @@ docker/tmp/
 # Claude Code
 .claude/
 .coverage
+mlflow.db

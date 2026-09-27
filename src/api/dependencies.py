@@ -1,22 +1,17 @@
 """Dependency injection for the FastAPI service.
 
-Loads models once at startup using FastAPI lifespan.
-Models are cached in app.state — never re-loaded per request.
+Loads shared model resources once at startup using FastAPI lifespan.
+Models and explainers are cached in app.state — never re-loaded per request.
 """
 
-import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from fastapi import FastAPI, Request
 
 from src.models.anomaly_detector import AnomalyDetector
 from src.models.demand_forecaster import DemandForecaster
-from src.models.elasticity_estimator import ElasticityEstimator
-from src.models.optimizer import get_optimal_price
 from src.utils.config import PROJECT_ROOT, load_config
 from src.utils.logger import get_logger
 
@@ -33,92 +28,165 @@ ROOM_TYPE_MAP = {
 
 @dataclass
 class ModelState:
-    """Container for all loaded models and runtime state."""
+    """Container for loaded production models and runtime state."""
 
     demand_forecaster: DemandForecaster | None = None
-    elasticity_estimator: ElasticityEstimator | None = None
     anomaly_detector: AnomalyDetector | None = None
+    shap_explainer: object | None = None
     config: dict = field(default_factory=dict)
-    model_version: str = "v0.1.0"
+    model_version: str = "v0.2.0"
     is_loaded: bool = False
     total_predictions: int = 0
-    # Neighborhood price lookup (precomputed from training data)
-    neighborhood_prices: dict = field(default_factory=dict)
+    neighborhood_prices: dict[str, float] = field(default_factory=dict)
+    neighborhood_location_clusters: dict[str, int] = field(default_factory=dict)
+    global_reference_price: float = 150.0
 
 
 def _load_models(state: ModelState) -> None:
-    """Load all models from disk into the state container."""
+    """Load production artifacts and lookup data into the state container."""
     config = load_config()
     state.config = config
     models_dir = PROJECT_ROOT / "models"
 
-    # Load demand forecaster
     demand_path = models_dir / "demand_forecaster"
-    if demand_path.exists():
-        state.demand_forecaster = DemandForecaster(config)
-        state.demand_forecaster.load(demand_path)
-        logger.info("Demand forecaster loaded")
-    else:
-        logger.warning(f"Demand forecaster not found at {demand_path}. Training a fresh model.")
-        state.demand_forecaster = DemandForecaster(config)
+    if not demand_path.exists():
+        logger.error("Demand forecaster not found at %s", demand_path)
+        state.is_loaded = False
+        return
 
-    # Load elasticity estimator
-    elasticity_path = models_dir / "elasticity_estimator"
-    if elasticity_path.exists():
-        state.elasticity_estimator = ElasticityEstimator(config)
-        state.elasticity_estimator.load(elasticity_path)
-        logger.info("Elasticity estimator loaded")
-    else:
-        logger.warning(f"Elasticity estimator not found at {elasticity_path}.")
-        state.elasticity_estimator = ElasticityEstimator(config)
-        state.elasticity_estimator.elasticity_coeff = -1.2  # Reasonable default
-        state.elasticity_estimator.metrics = {"elasticity_coeff": -1.2, "r2": 0.0, "mae": 0.0, "rmse": 0.0}
+    state.demand_forecaster = DemandForecaster(config)
+    state.demand_forecaster.load(demand_path)
+    logger.info("Demand forecaster loaded")
 
-    # Load anomaly detector
+    # Build one TreeSHAP explainer at startup instead of per request.
+    try:
+        import shap
+
+        state.shap_explainer = shap.TreeExplainer(
+            state.demand_forecaster.model,
+        )
+        logger.info("TreeSHAP explainer initialized")
+    except Exception as exc:
+        state.shap_explainer = None
+        logger.warning("TreeSHAP unavailable: %s", exc)
+
     anomaly_path = models_dir / "anomaly_detector"
     if anomaly_path.exists():
         state.anomaly_detector = AnomalyDetector(config=config)
         state.anomaly_detector.load(anomaly_path)
         logger.info("Anomaly detector loaded")
     else:
-        logger.warning(f"Anomaly detector not found at {anomaly_path}.")
-        state.anomaly_detector = None
+        logger.warning("Anomaly detector not found at %s", anomaly_path)
 
-    # Load neighborhood prices if available
-    features_path = PROJECT_ROOT / config["data"]["processed_dir"] / "listings_features.parquet"
+    features_path = (
+        PROJECT_ROOT
+        / config["data"]["processed_dir"]
+        / "listings_features.parquet"
+    )
     if features_path.exists():
         listings = pd.read_parquet(features_path)
-        if "neighbourhood_cleansed" in listings.columns and "price" in listings.columns:
+
+        if "price" in listings.columns:
+            price_series = pd.to_numeric(
+                listings["price"],
+                errors="coerce",
+            ).dropna()
+            if not price_series.empty:
+                state.global_reference_price = float(
+                    price_series.median()
+                )
+
+        if (
+            "neighbourhood_cleansed" in listings.columns
+            and "price" in listings.columns
+        ):
             state.neighborhood_prices = (
-                listings.groupby("neighbourhood_cleansed")["price"]
+                listings.assign(
+                    price=pd.to_numeric(
+                        listings["price"],
+                        errors="coerce",
+                    )
+                )
+                .dropna(
+                    subset=[
+                        "neighbourhood_cleansed",
+                        "price",
+                    ]
+                )
+                .groupby(
+                    "neighbourhood_cleansed"
+                )["price"]
                 .median()
+                .astype(float)
                 .to_dict()
             )
-            logger.info(f"Loaded prices for {len(state.neighborhood_prices)} neighborhoods")
-    else:
-        logger.warning("No listings features found. Neighborhood prices unavailable.")
 
-    state.is_loaded = True
-    logger.info("All models loaded successfully")
+        if (
+            "neighbourhood_cleansed" in listings.columns
+            and "location_cluster" in listings.columns
+        ):
+            cluster_frame = listings[
+                [
+                    "neighbourhood_cleansed",
+                    "location_cluster",
+                ]
+            ].dropna()
+
+            if not cluster_frame.empty:
+                state.neighborhood_location_clusters = (
+                    cluster_frame
+                    .groupby("neighbourhood_cleansed")[
+                        "location_cluster"
+                    ]
+                    .agg(
+                        lambda values: int(
+                            values.mode().iloc[0]
+                        )
+                    )
+                    .to_dict()
+                )
+
+        logger.info(
+            "Loaded %d neighborhood prices and %d location-cluster mappings",
+            len(state.neighborhood_prices),
+            len(state.neighborhood_location_clusters),
+        )
+    else:
+        logger.warning(
+            "No listings features found. "
+            "Neighborhood reference data unavailable."
+        )
+
+    state.is_loaded = (
+        state.demand_forecaster.model is not None
+        and state.demand_forecaster.feature_names is not None
+    )
+    logger.info(
+        "Production model state loaded: %s",
+        state.is_loaded,
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan: load models at startup, cleanup at shutdown."""
+    """Load shared model resources at startup and release them at shutdown."""
     state = ModelState()
     try:
         _load_models(state)
-    except Exception as e:
-        logger.error(f"Failed to load models: {e}")
+    except Exception as exc:
+        logger.error("Failed to load models: %s", exc)
         state.is_loaded = False
+
     app.state.models = state
     logger.info("API startup complete")
     yield
+
+    state.shap_explainer = None
     logger.info("API shutting down")
 
 
 def get_model_state(request: Request) -> ModelState:
-    """FastAPI dependency: get the model state from app.state."""
+    """Return the application-level model state."""
     return request.app.state.models
 
 
@@ -130,31 +198,46 @@ def build_features_from_request(
     checkin_date: str,
     amenity_score: float,
     review_score: float,
+    reference_price: float,
+    location_cluster: int = 0,
+    training_start_date: str | None = None,
 ) -> dict:
-    """Convert API request fields into model feature dict."""
+    """Convert request fields into the leakage-safe demand-model feature set."""
+    del neighborhood  # Reserved for future neighborhood-specific features.
+
     dt = pd.Timestamp(checkin_date)
 
-    features = {
-        "day_of_week": dt.dayofweek,
-        "day_of_month": dt.day,
-        "week_of_year": dt.isocalendar()[1],
-        "month": dt.month,
-        "quarter": dt.quarter,
+    days_from_start = 0
+    if training_start_date:
+        start = pd.Timestamp(training_start_date)
+        days_from_start = max(
+            0,
+            int(
+                (
+                    dt.normalize()
+                    - start.normalize()
+                ).days
+            ),
+        )
+
+    return {
+        "price": float(reference_price),
+        "day_of_week": int(dt.dayofweek),
+        "day_of_month": int(dt.day),
+        "week_of_year": int(dt.isocalendar().week),
+        "month": int(dt.month),
+        "quarter": int(dt.quarter),
         "is_weekend": int(dt.dayofweek >= 5),
         "season": (
-            0 if dt.month in [12, 1, 2] else
-            1 if dt.month in [3, 4, 5] else
-            2 if dt.month in [6, 7, 8] else 3
+            0
+            if dt.month in [12, 1, 2]
+            else 1
+            if dt.month in [3, 4, 5]
+            else 2
+            if dt.month in [6, 7, 8]
+            else 3
         ),
-        "days_from_start": 0,
-        "room_type_encoded": ROOM_TYPE_MAP.get(room_type, 0),
-        "beds": beds,
-        "bathrooms": bathrooms,
-        "amenity_score": amenity_score,
-        "review_score": review_score,
-        # Defaults for features that need historical data
-        "rolling_7d_occupancy": 0.5,
-        "rolling_30d_occupancy": 0.5,
+        "days_from_start": days_from_start,
         "temperature_mean": 20.0,
         "precipitation_sum": 0.0,
         "wind_speed_max": 10.0,
@@ -164,9 +247,13 @@ def build_features_from_request(
         "is_holiday": 0,
         "days_until_holiday": 30,
         "near_holiday": 0,
-        "location_cluster": 0,
-        "occupancy_rate": 0.5,
-        "price_rank_in_neighborhood": 0.5,
-        "price_vs_neighborhood": 1.0,
+        "room_type_encoded": ROOM_TYPE_MAP.get(
+            room_type,
+            0,
+        ),
+        "beds": int(beds),
+        "bathrooms": float(bathrooms),
+        "amenity_score": float(amenity_score),
+        "review_score": float(review_score),
+        "location_cluster": int(location_cluster),
     }
-    return features

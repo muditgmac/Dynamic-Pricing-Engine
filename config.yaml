@@ -15,13 +15,13 @@ data:
   # Inside Airbnb data URLs for NYC
   insideairbnb:
     base_url: "https://data.insideairbnb.com/united-states/ny/new-york-city"
-    listings_url: "https://data.insideairbnb.com/united-states/ny/new-york-city/2024-09-06/data/listings.csv.gz"
-    calendar_url: "https://data.insideairbnb.com/united-states/ny/new-york-city/2024-09-06/data/calendar.csv.gz"
-    reviews_url: "https://data.insideairbnb.com/united-states/ny/new-york-city/2024-09-06/data/reviews.csv.gz"
+    listings_url: "https://data.insideairbnb.com/united-states/ny/new-york-city/2026-06-14/data/listings.csv.gz"
+    calendar_url: "https://data.insideairbnb.com/united-states/ny/new-york-city/2026-06-14/data/calendar.csv.gz"
+    reviews_url: "https://data.insideairbnb.com/united-states/ny/new-york-city/2026-06-14/data/reviews.csv.gz"
 
 # Weather API (Open-Meteo - free, no key)
 weather:
-  api_url: "https://api.open-meteo.com/v1/forecast"
+  api_url: "https://archive-api.open-meteo.com/v1/forecast"
   latitude: 40.7128
   longitude: -74.0060
   variables:
@@ -85,7 +85,7 @@ dashboard:
 
 # MLflow Configuration
 mlflow:
-  tracking_uri: "mlruns"
+  tracking_uri: "sqlite:///mlflow.db"
   experiment_name: "dynamic-pricing"
   model_registry_name: "pricing-model"
 
